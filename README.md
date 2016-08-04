@@ -12,6 +12,7 @@ The following labels are exposed:
 
  - *az*: availability zone
  - *instance_type*: type of instance
+ - *lifecycle*: spot or scheduled instance
  - *groups*: sorted comma separated list of groups.
  - *owner_id*: The owner id
  - *requester_id*: The requester id (default to owner id if none is present)
