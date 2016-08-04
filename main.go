@@ -165,7 +165,10 @@ func instances(svc *ec2.EC2, awsRegion string) {
 		for _, ins := range r.Instances {
 			labels["az"] = *ins.Placement.AvailabilityZone
 			labels["instance_type"] = *ins.InstanceType
-			labels["lifecycle"] = *ins.InstanceLifecycle
+			labels["lifecycle"] = "normal"
+			if ins.InstanceLifecycle != nil {
+				labels["lifecycle"] = *ins.InstanceLifecycle
+			}
 			for _, label := range instanceTags {
 				labels[label] = ""
 			}
