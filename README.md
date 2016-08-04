@@ -36,3 +36,22 @@ The following labels are exposed:
  - *offer_type*:
  - *product*:
 
+# Usage
+
+  Your aws credentials should either be in $HOME/.aws/credentials , or set via AWS\_ACCESS\_KEY and AWS\_SECRET\_ACCESS\_KEY
+
+  Usage of /go/bin/aws_audit_exporter:
+  -addr string
+        port to listen on (default ":9190")
+  -duration duration
+        How often to query the API (default 4m0s)
+  -instance-tags string
+        comma seperated list of tag keys to use as metric labels
+  -region string
+        the region to query (default "eu-west-1")
+
+# TODO
+
+ - Add optional Push gateway support
+ - Make tracking full Reserved instance tracking optional and pre-aggregate
+
