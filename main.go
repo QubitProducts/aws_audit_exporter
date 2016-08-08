@@ -94,6 +94,18 @@ var (
 		"launch_group",
 		"instance_profile",
 	}
+
+	sphLabels = []string{
+		"az",
+		"product",
+		"instance_type",
+	}
+
+	sphPrice = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "aws_ec2_spot_price_dollars",
+		Help: "Current market price of a spot instance in dollars",
+	},
+		sphLabels)
 )
 
 // We have to construct the set of tags for this based on the program
@@ -153,6 +165,7 @@ func main() {
 	prometheus.Register(siCount)
 	prometheus.Register(siBidPrice)
 	prometheus.Register(siBlockHourlyPrice)
+	prometheus.Register(sphPrice)
 
 	sess, err := session.NewSession()
 	if err != nil {
@@ -164,6 +177,7 @@ func main() {
 	go func() {
 		for {
 			instances(svc, *region)
+			spotPriceHistory(svc, *region)
 			go reservations(svc, *region)
 			go spots(svc, *region)
 			<-time.After(*dur)
@@ -287,6 +301,8 @@ func spots(svc *ec2.EC2, awsRegion string) {
 		log.Fatal(err.Error())
 	}
 
+	productSeen := map[string]bool{}
+
 	labels := prometheus.Labels{}
 	siCount.Reset()
 	siBlockHourlyPrice.Reset()
@@ -305,6 +321,7 @@ func spots(svc *ec2.EC2, awsRegion string) {
 
 		labels["az"] = *r.LaunchedAvailabilityZone
 		labels["product"] = *r.ProductDescription
+		productSeen[*r.ProductDescription] = true
 		labels["persistence"] = "one-time"
 		if r.Type != nil {
 			labels["persistence"] = *r.Type
@@ -343,6 +360,37 @@ func spots(svc *ec2.EC2, awsRegion string) {
 
 		siCount.With(labels).Inc()
 	}
+
+	pList := []*string{}
+	for p, _ := range productSeen {
+		pp := p
+		pList = append(pList, &pp)
+	}
+
+	phParams := &ec2.DescribeSpotPriceHistoryInput{
+		StartTime:           aws.Time(time.Now()),
+		EndTime:             aws.Time(time.Now()),
+		ProductDescriptions: pList,
+	}
+	phResp, err := svc.DescribeSpotPriceHistory(phParams)
+	if err != nil {
+		fmt.Println("there was an error listing spot requests", awsRegion, err.Error())
+		log.Fatal(err.Error())
+	}
+	spLabels := prometheus.Labels{}
+	for _, sp := range phResp.SpotPriceHistory {
+		spLabels["az"] = *sp.AvailabilityZone
+		spLabels["product"] = *sp.ProductDescription
+		spLabels["instance_type"] = *sp.InstanceType
+		if sp.SpotPrice != nil {
+			if f, err := strconv.ParseFloat(*sp.SpotPrice, 64); err == nil {
+				sphPrice.With(spLabels).Set(f)
+			}
+		}
+	}
+}
+
+func spotPriceHistory(svc *ec2.EC2, awsRegion string) {
 }
 
 var cleanre = regexp.MustCompile("[^A-Za-z0-9]")
