@@ -123,6 +123,7 @@ var siBlockHourlyPrice *prometheus.GaugeVec
 // out spot instance spend
 var instanceLabelsCacheMutex = sync.RWMutex{}
 var instanceLabelsCache = map[string]prometheus.Labels{}
+var instanceLabelsCacheIsVPC = map[string]bool{}
 
 func main() {
 	flag.Parse()
@@ -177,7 +178,6 @@ func main() {
 	go func() {
 		for {
 			instances(svc, *region)
-			spotPriceHistory(svc, *region)
 			go reservations(svc, *region)
 			go spots(svc, *region)
 			<-time.After(*dur)
@@ -191,6 +191,10 @@ func main() {
 func instances(svc *ec2.EC2, awsRegion string) {
 	instanceLabelsCacheMutex.Lock()
 	defer instanceLabelsCacheMutex.Unlock()
+
+	//Clear the cache
+	instanceLabelsCache = map[string]prometheus.Labels{}
+	instanceLabelsCacheIsVPC = map[string]bool{}
 
 	params := &ec2.DescribeInstancesInput{
 		Filters: []*ec2.Filter{
@@ -238,6 +242,9 @@ func instances(svc *ec2.EC2, awsRegion string) {
 					labels[label] = *tag.Value
 					instanceLabelsCache[*ins.InstanceId][label] = *tag.Value
 				}
+			}
+			if ins.VpcId != nil {
+				instanceLabelsCacheIsVPC[*ins.InstanceId] = true
 			}
 			instancesCount.With(labels).Inc()
 		}
@@ -320,8 +327,14 @@ func spots(svc *ec2.EC2, awsRegion string) {
 		}
 
 		labels["az"] = *r.LaunchedAvailabilityZone
-		labels["product"] = *r.ProductDescription
-		productSeen[*r.ProductDescription] = true
+
+		product := *r.ProductDescription
+		if isVpc, ok := instanceLabelsCacheIsVPC[*r.InstanceId]; ok && isVpc {
+			product += " (Amazon VPC)"
+		}
+		labels["product"] = product
+		productSeen[product] = true
+
 		labels["persistence"] = "one-time"
 		if r.Type != nil {
 			labels["persistence"] = *r.Type
@@ -361,6 +374,7 @@ func spots(svc *ec2.EC2, awsRegion string) {
 		siCount.With(labels).Inc()
 	}
 
+	// This is silly, but spot instances requests don't seem to include the vpc case
 	pList := []*string{}
 	for p, _ := range productSeen {
 		pp := p
@@ -368,9 +382,15 @@ func spots(svc *ec2.EC2, awsRegion string) {
 	}
 
 	phParams := &ec2.DescribeSpotPriceHistoryInput{
-		StartTime:           aws.Time(time.Now()),
-		EndTime:             aws.Time(time.Now()),
-		ProductDescriptions: pList,
+		StartTime: aws.Time(time.Now()),
+		EndTime:   aws.Time(time.Now()),
+		//		ProductDescriptions: pList,
+		Filters: []*ec2.Filter{
+			{
+				Name:   aws.String("product-description"),
+				Values: pList,
+			},
+		},
 	}
 	phResp, err := svc.DescribeSpotPriceHistory(phParams)
 	if err != nil {
@@ -388,9 +408,6 @@ func spots(svc *ec2.EC2, awsRegion string) {
 			}
 		}
 	}
-}
-
-func spotPriceHistory(svc *ec2.EC2, awsRegion string) {
 }
 
 var cleanre = regexp.MustCompile("[^A-Za-z0-9]")
