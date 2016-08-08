@@ -89,6 +89,7 @@ var (
 	siLabels = []string{
 		"az",
 		"product",
+		"persistence",
 		"instance_type",
 		"launch_group",
 		"instance_profile",
@@ -304,6 +305,10 @@ func spots(svc *ec2.EC2, awsRegion string) {
 
 		labels["az"] = *r.LaunchedAvailabilityZone
 		labels["product"] = *r.ProductDescription
+		labels["persistence"] = "one-time"
+		if r.Type != nil {
+			labels["persistence"] = *r.Type
+		}
 
 		labels["launch_group"] = "none"
 		if r.LaunchGroup != nil {
