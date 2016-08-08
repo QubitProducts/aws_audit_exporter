@@ -102,8 +102,8 @@ var (
 	}
 
 	sphPrice = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "aws_ec2_spot_price_dollars",
-		Help: "Current market price of a spot instance in dollars",
+		Name: "aws_ec2_spot_price_per_hour_dollars",
+		Help: "Current market price of a spot instance, per hour,  in dollars",
 	},
 		sphLabels)
 )
