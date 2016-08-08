@@ -21,7 +21,9 @@ import (
 	"net/http"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -38,11 +40,11 @@ var (
 
 	riLabels = []string{
 		"az",
+		"reserved_instance_id",
 		"tenancy",
 		"instance_type",
 		"offer_type",
 		"product",
-		"id",
 	}
 	riUsagePrice = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "aws_ec2_reserved_instances_usage_price_dollars",
@@ -51,12 +53,12 @@ var (
 		riLabels)
 	riFixedPrice = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "aws_ec2_reserved_instances_fixed_price_dollars",
-		Help: "fixed cost of reserved instance in dollars",
+		Help: "total hourly fixed cost of reserved instance in dollars",
 	},
 		riLabels)
 	riHourlyPrice = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "aws_ec2_reserved_instances_price_per_hour_dollars",
-		Help: "hourly cost of reserved instance in dollars",
+		Help: "total hourly cost of reserved instance in dollars",
 	},
 		riLabels)
 	riInstanceCount = prometheus.NewGaugeVec(prometheus.GaugeOpts{
@@ -83,12 +85,31 @@ var (
 		"instance_type",
 		"lifecycle",
 	}
+
+	siLabels = []string{
+		"az",
+		"product",
+		"instance_type",
+		"launch_group",
+		"instance_profile",
+	}
 )
 
 // We have to construct the set of tags for this based on the program
 // args, so it is created in main
 var instancesCount *prometheus.GaugeVec
 var instanceTags = map[string]string{}
+
+// Similarly, we want to use the instance labels in the spot instance
+// metrics
+var siCount *prometheus.GaugeVec
+var siBidPrice *prometheus.GaugeVec
+var siBlockHourlyPrice *prometheus.GaugeVec
+
+// We'll cache the instance tag labels so that we can use them to separate
+// out spot instance spend
+var instanceLabelsCacheMutex = sync.RWMutex{}
+var instanceLabelsCache = map[string]prometheus.Labels{}
 
 func main() {
 	flag.Parse()
@@ -105,6 +126,22 @@ func main() {
 	},
 		append(instancesLabels, tagl...))
 
+	siCount = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "aws_ec2_spot_request_count",
+		Help: "Number of active/fullfilled spot requests",
+	},
+		append(siLabels, tagl...))
+	siBidPrice = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "aws_ec2_spot_request_bid_price_hourly_dollars",
+		Help: "cost of spot instances hourly usage in dollars",
+	},
+		append(siLabels, tagl...))
+	siBlockHourlyPrice = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "aws_ec2_spot_request_actual_block_price_hourly_dollars",
+		Help: "fixed hourly cost of limited duration spot instances in dollars",
+	},
+		append(siLabels, tagl...))
+
 	prometheus.Register(instancesCount)
 	prometheus.Register(riUsagePrice)
 	prometheus.Register(riFixedPrice)
@@ -112,6 +149,9 @@ func main() {
 	prometheus.Register(riInstanceCount)
 	prometheus.Register(riStartTime)
 	prometheus.Register(riEndTime)
+	prometheus.Register(siCount)
+	prometheus.Register(siBidPrice)
+	prometheus.Register(siBlockHourlyPrice)
 
 	sess, err := session.NewSession()
 	if err != nil {
@@ -122,8 +162,9 @@ func main() {
 
 	go func() {
 		for {
-			go instances(svc, *region)
+			instances(svc, *region)
 			go reservations(svc, *region)
+			go spots(svc, *region)
 			<-time.After(*dur)
 		}
 	}()
@@ -132,8 +173,10 @@ func main() {
 
 	log.Println(http.ListenAndServe(*addr, nil))
 }
-
 func instances(svc *ec2.EC2, awsRegion string) {
+	instanceLabelsCacheMutex.Lock()
+	defer instanceLabelsCacheMutex.Unlock()
+
 	params := &ec2.DescribeInstancesInput{
 		Filters: []*ec2.Filter{
 			{
@@ -169,13 +212,16 @@ func instances(svc *ec2.EC2, awsRegion string) {
 			if ins.InstanceLifecycle != nil {
 				labels["lifecycle"] = *ins.InstanceLifecycle
 			}
+			instanceLabelsCache[*ins.InstanceId] = prometheus.Labels{}
 			for _, label := range instanceTags {
 				labels[label] = ""
+				instanceLabelsCache[*ins.InstanceId][label] = ""
 			}
 			for _, tag := range ins.Tags {
 				label, ok := instanceTags[*tag.Key]
 				if ok {
 					labels[label] = *tag.Value
+					instanceLabelsCache[*ins.InstanceId][label] = *tag.Value
 				}
 			}
 			instancesCount.With(labels).Inc()
@@ -205,7 +251,7 @@ func reservations(svc *ec2.EC2, awsRegion string) {
 		labels["tenancy"] = *r.InstanceTenancy
 		labels["offer_type"] = *r.OfferingType
 		labels["product"] = *r.ProductDescription
-		labels["id"] = *r.ReservedInstancesId
+		labels["reserved_instance_id"] = *r.ReservedInstancesId
 
 		riUsagePrice.With(labels).Set(*r.UsagePrice)
 		riFixedPrice.With(labels).Set(*r.FixedPrice)
@@ -219,6 +265,78 @@ func reservations(svc *ec2.EC2, awsRegion string) {
 		riStartTime.With(labels).Set(float64(r.Start.Unix()))
 		riEndTime.With(labels).Set(float64(r.End.Unix()))
 
+	}
+}
+
+func spots(svc *ec2.EC2, awsRegion string) {
+	instanceLabelsCacheMutex.RLock()
+	defer instanceLabelsCacheMutex.RUnlock()
+
+	params := &ec2.DescribeSpotInstanceRequestsInput{
+		Filters: []*ec2.Filter{
+			{
+				Name:   aws.String("state"),
+				Values: []*string{aws.String("active")},
+			},
+		},
+	}
+	resp, err := svc.DescribeSpotInstanceRequests(params)
+	if err != nil {
+		fmt.Println("there was an error listing spot requests", awsRegion, err.Error())
+		log.Fatal(err.Error())
+	}
+
+	labels := prometheus.Labels{}
+	siCount.Reset()
+	siBlockHourlyPrice.Reset()
+	siBidPrice.Reset()
+	for _, r := range resp.SpotInstanceRequests {
+		for _, label := range instanceTags {
+			labels[label] = ""
+		}
+		if r.InstanceId != nil {
+			if ilabels, ok := instanceLabelsCache[*r.InstanceId]; ok {
+				for k, v := range ilabels {
+					labels[k] = v
+				}
+			}
+		}
+
+		labels["az"] = *r.LaunchedAvailabilityZone
+		labels["product"] = *r.ProductDescription
+
+		labels["launch_group"] = "none"
+		if r.LaunchGroup != nil {
+			labels["launch_group"] = *r.LaunchGroup
+		}
+
+		labels["instance_type"] = "unknown"
+		if r.LaunchSpecification != nil && r.LaunchSpecification.InstanceType != nil {
+			labels["instance_type"] = *r.LaunchSpecification.InstanceType
+		}
+
+		labels["instance_profile"] = "unknown"
+		if r.LaunchSpecification != nil && r.LaunchSpecification.IamInstanceProfile != nil {
+			labels["instance_profile"] = *r.LaunchSpecification.IamInstanceProfile.Name
+		}
+
+		price := 0.0
+		if r.ActualBlockHourlyPrice != nil {
+			if f, err := strconv.ParseFloat(*r.ActualBlockHourlyPrice, 64); err == nil {
+				price = f
+			}
+		}
+		siBlockHourlyPrice.With(labels).Add(price)
+
+		price = 0
+		if r.SpotPrice != nil {
+			if f, err := strconv.ParseFloat(*r.SpotPrice, 64); err == nil {
+				price = f
+			}
+		}
+		siBidPrice.With(labels).Add(price)
+
+		siCount.With(labels).Inc()
 	}
 }
 
