@@ -16,6 +16,7 @@ The following labels are exposed:
  - *groups*: sorted comma separated list of groups.
  - *owner_id*: The owner id
  - *requester_id*: The requester id (default to owner id if none is present)
+ - *aws_tag_*: Any tags passed in with the -instance-tags flag are added as labels
 
 # EC2 Reserved Instances
 Every set of instance reservations gets its own time series, this is intended to allow
@@ -33,9 +34,35 @@ The following labels are exposed:
  - *id*: the reservation id
  - *az*: availability zone
  - *instance_type*: type of instance
+ - *product*: The product description
  - *tenancy*:
  - *offer_type*:
- - *product*:
+
+# EC2 Spot Instance Request
+
+Only fullfilled active spot instances requests are currently tracke
+
+ - *aws\_ec2\_spot\_request\_count*: How active spot instances of a given type you have running
+ - *aws\_ec2\_spot\_request\_bid\_price\_hourly\_dollars*: Your maximum bid price
+ - *aws\_ec2\_spot\_request\_actual\_block\_price\_hourly\_dollars*: The price paid for limited duration spot instances
+
+The following labels are exposed:
+
+ - *az*: availability zone
+ - *instance_type*: type of instance
+ - *product*: The product description
+
+# EC2 Spot Instance Pricing
+
+Only prices for products that have been seen in spot instance requests are tracked.
+
+ - *aws\_ec2\_spot\_price\_per\_hour\_dollars*: The current market price for a spot instance
+
+The following labels are exposed:
+
+ - *az*: availability zone
+ - *instance_type*: type of instance
+ - *product*: The product description
 
 # Usage
 
