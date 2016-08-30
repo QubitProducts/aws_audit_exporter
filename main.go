@@ -179,6 +179,7 @@ func main() {
 		for {
 			instances(svc, *region)
 			go reservations(svc, *region)
+			go reservationListings(svc, *region)
 			go spots(svc, *region)
 			<-time.After(*dur)
 		}
@@ -263,9 +264,14 @@ func reservations(svc *ec2.EC2, awsRegion string) {
 	resp, err := svc.DescribeReservedInstances(params)
 	if err != nil {
 		fmt.Println("there was an error listing instances in", awsRegion, err.Error())
-		log.Fatal(err.Error())
 	}
 
+	riUsagePrice.Reset()
+	riFixedPrice.Reset()
+	riHourlyPrice.Reset()
+	riInstanceCount.Reset()
+	riStartTime.Reset()
+	riEndTime.Reset()
 	labels := prometheus.Labels{}
 	for _, r := range resp.ReservedInstances {
 		labels["az"] = *r.AvailabilityZone
@@ -288,6 +294,44 @@ func reservations(svc *ec2.EC2, awsRegion string) {
 		riEndTime.With(labels).Set(float64(r.End.Unix()))
 
 	}
+
+	/*
+		rilparams := &ec2.DescribeReservedInstancesListingsInput{
+			Filters: []*ec2.Filter{
+				{
+					Name:   aws.String("status"),
+					Values: []*string{aws.String("active")},
+				},
+			},
+		}
+		rilresp, err := svc.DescribeReservedInstancesListings(rilparams)
+		if err != nil {
+			fmt.Println("there was an error listing reserved instances listingsin", awsRegion, err.Error())
+			return
+		}
+	*/
+}
+
+func reservationListings(svc *ec2.EC2, awsRegion string) {
+	params := &ec2.DescribeReservedInstancesListingsInput{
+		Filters: []*ec2.Filter{
+			{
+				Name:   aws.String("status"),
+				Values: []*string{aws.String("active")},
+			},
+		},
+	}
+	resp, err := svc.DescribeReservedInstancesListings(params)
+
+	if err != nil {
+		// Print the error, cast err to awserr.Error to get the Code and
+		// Message from an error.
+		fmt.Println(err.Error())
+		return
+	}
+
+	// Pretty-print the response data.
+	fmt.Println(resp)
 }
 
 func spots(svc *ec2.EC2, awsRegion string) {
