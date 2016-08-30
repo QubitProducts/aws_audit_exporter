@@ -324,6 +324,20 @@ func reservations(svc *ec2.EC2, awsRegion string) {
 		return
 	}
 	rilInstanceCount.Reset()
+
+	labels = prometheus.Labels{}
+	for _, r := range ris {
+		labels["az"] = *r.AvailabilityZone
+		labels["instance_type"] = *r.InstanceType
+		labels["product"] = *r.ProductDescription
+		labels["reserved_instance_id"] = *r.ReservedInstancesId
+
+		for _, s := range []string{"available", "sold", "cancelled", "pending"} {
+			labels["state"] = s
+			rilInstanceCount.With(labels).Set(0)
+		}
+	}
+
 	labels = prometheus.Labels{}
 	for _, ril := range rilresp.ReservedInstancesListings {
 		r, ok := ris[*ril.ReservedInstancesId]
