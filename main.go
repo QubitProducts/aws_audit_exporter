@@ -77,6 +77,20 @@ var (
 	},
 		riLabels)
 
+	rilLabels = []string{
+		"az",
+		"instance_type",
+		"product",
+		"reserved_instance_id",
+		"state",
+	}
+
+	rilInstanceCount = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "aws_ec2_reserved_instances_listing_count",
+		Help: "Number of reserved instances listed on the market for a reservation",
+	},
+		rilLabels)
+
 	instancesLabels = []string{
 		"groups",
 		"owner_id",
@@ -163,6 +177,7 @@ func main() {
 	prometheus.Register(riInstanceCount)
 	prometheus.Register(riStartTime)
 	prometheus.Register(riEndTime)
+	prometheus.Register(rilInstanceCount)
 	prometheus.Register(siCount)
 	prometheus.Register(siBidPrice)
 	prometheus.Register(siBlockHourlyPrice)
@@ -179,7 +194,6 @@ func main() {
 		for {
 			instances(svc, *region)
 			go reservations(svc, *region)
-			go reservationListings(svc, *region)
 			go spots(svc, *region)
 			<-time.After(*dur)
 		}
@@ -266,6 +280,7 @@ func reservations(svc *ec2.EC2, awsRegion string) {
 		fmt.Println("there was an error listing instances in", awsRegion, err.Error())
 	}
 
+	ris := map[string]*ec2.ReservedInstances{}
 	riUsagePrice.Reset()
 	riFixedPrice.Reset()
 	riHourlyPrice.Reset()
@@ -280,6 +295,7 @@ func reservations(svc *ec2.EC2, awsRegion string) {
 		labels["offer_type"] = *r.OfferingType
 		labels["product"] = *r.ProductDescription
 		labels["reserved_instance_id"] = *r.ReservedInstancesId
+		ris[*r.ReservedInstancesId] = r
 
 		riUsagePrice.With(labels).Set(*r.UsagePrice)
 		riFixedPrice.With(labels).Set(*r.FixedPrice)
@@ -292,28 +308,9 @@ func reservations(svc *ec2.EC2, awsRegion string) {
 		riInstanceCount.With(labels).Set(float64(*r.InstanceCount))
 		riStartTime.With(labels).Set(float64(r.Start.Unix()))
 		riEndTime.With(labels).Set(float64(r.End.Unix()))
-
 	}
 
-	/*
-		rilparams := &ec2.DescribeReservedInstancesListingsInput{
-			Filters: []*ec2.Filter{
-				{
-					Name:   aws.String("status"),
-					Values: []*string{aws.String("active")},
-				},
-			},
-		}
-		rilresp, err := svc.DescribeReservedInstancesListings(rilparams)
-		if err != nil {
-			fmt.Println("there was an error listing reserved instances listingsin", awsRegion, err.Error())
-			return
-		}
-	*/
-}
-
-func reservationListings(svc *ec2.EC2, awsRegion string) {
-	params := &ec2.DescribeReservedInstancesListingsInput{
+	rilparams := &ec2.DescribeReservedInstancesListingsInput{
 		Filters: []*ec2.Filter{
 			{
 				Name:   aws.String("status"),
@@ -321,17 +318,29 @@ func reservationListings(svc *ec2.EC2, awsRegion string) {
 			},
 		},
 	}
-	resp, err := svc.DescribeReservedInstancesListings(params)
-
+	rilresp, err := svc.DescribeReservedInstancesListings(rilparams)
 	if err != nil {
-		// Print the error, cast err to awserr.Error to get the Code and
-		// Message from an error.
-		fmt.Println(err.Error())
+		fmt.Println("there was an error listing reserved instances listingsin", awsRegion, err.Error())
 		return
 	}
+	rilInstanceCount.Reset()
+	labels = prometheus.Labels{}
+	for _, ril := range rilresp.ReservedInstancesListings {
+		r, ok := ris[*ril.ReservedInstancesId]
+		if !ok {
+			fmt.Printf("Reservations listing for unknown reservation")
+			continue
+		}
+		labels["az"] = *r.AvailabilityZone
+		labels["instance_type"] = *r.InstanceType
+		labels["product"] = *r.ProductDescription
+		labels["reserved_instance_id"] = *r.ReservedInstancesId
 
-	// Pretty-print the response data.
-	fmt.Println(resp)
+		for _, ic := range ril.InstanceCounts {
+			labels["state"] = *ic.State
+			rilInstanceCount.With(labels).Add(float64(*ic.InstanceCount))
+		}
+	}
 }
 
 func spots(svc *ec2.EC2, awsRegion string) {
