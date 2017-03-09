@@ -1,0 +1,12 @@
+package: github.com/QubitProducts/aws_audit_exporter
+import:
+- package: github.com/aws/aws-sdk-go
+  version: ^1.7.6
+  subpackages:
+  - aws
+  - aws/session
+  - service/ec2
+- package: github.com/prometheus/client_golang
+  version: ^0.8.0
+  subpackages:
+  - prometheus

@@ -15,6 +15,7 @@
 package ini
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -23,12 +24,50 @@ import (
 
 // Key represents a key under a section.
 type Key struct {
-	s          *Section
-	Comment    string
-	name       string
-	value      string
-	isAutoIncr bool
+	s               *Section
+	name            string
+	value           string
+	isAutoIncrement bool
+	isBooleanType   bool
+
+	isShadow bool
+	shadows  []*Key
+
+	Comment string
 }
+
+// newKey simply return a key object with given values.
+func newKey(s *Section, name, val string) *Key {
+	return &Key{
+		s:     s,
+		name:  name,
+		value: val,
+	}
+}
+
+func (k *Key) addShadow(val string) error {
+	if k.isShadow {
+		return errors.New("cannot add shadow to another shadow key")
+	} else if k.isAutoIncrement || k.isBooleanType {
+		return errors.New("cannot add shadow to auto-increment or boolean key")
+	}
+
+	shadow := newKey(k.s, k.name, val)
+	shadow.isShadow = true
+	k.shadows = append(k.shadows, shadow)
+	return nil
+}
+
+// AddShadow adds a new shadow key to itself.
+func (k *Key) AddShadow(val string) error {
+	if !k.s.f.options.AllowShadows {
+		return errors.New("shadow key is not allowed")
+	}
+	return k.addShadow(val)
+}
+
+// ValueMapper represents a mapping function for values, e.g. os.ExpandEnv
+type ValueMapper func(string) string
 
 // Name returns name of key.
 func (k *Key) Name() string {
@@ -40,9 +79,25 @@ func (k *Key) Value() string {
 	return k.value
 }
 
+// ValueWithShadows returns raw values of key and its shadows if any.
+func (k *Key) ValueWithShadows() []string {
+	if len(k.shadows) == 0 {
+		return []string{k.value}
+	}
+	vals := make([]string, len(k.shadows)+1)
+	vals[0] = k.value
+	for i := range k.shadows {
+		vals[i+1] = k.shadows[i].value
+	}
+	return vals
+}
+
 // String returns string representation of value.
 func (k *Key) String() string {
 	val := k.value
+	if k.s.f.ValueMapper != nil {
+		val = k.s.f.ValueMapper(val)
+	}
 	if strings.Index(val, "%") == -1 {
 		return val
 	}

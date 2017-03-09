@@ -29,7 +29,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/tcolgate/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 var (
@@ -40,48 +40,23 @@ var (
 
 	riLabels = []string{
 		"az",
-		"reserved_instance_id",
+		"scope",
 		"tenancy",
 		"instance_type",
 		"offer_type",
 		"product",
 	}
-	riUsagePrice = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "aws_ec2_reserved_instances_usage_price_dollars",
-		Help: "cost of reserved instance usage in dollars",
-	},
-		riLabels)
-	riFixedPrice = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "aws_ec2_reserved_instances_fixed_price_dollars",
-		Help: "total hourly fixed cost of reserved instance in dollars",
-	},
-		riLabels)
-	riHourlyPrice = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "aws_ec2_reserved_instances_price_per_hour_dollars",
-		Help: "total hourly cost of reserved instance in dollars",
-	},
-		riLabels)
 	riInstanceCount = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "aws_ec2_reserved_instances_count",
 		Help: "Number of reserved instances in this reservation",
 	},
 		riLabels)
-	riStartTime = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "aws_ec2_reserved_instances_start_time",
-		Help: "Start time of this reservation",
-	},
-		riLabels)
-	riEndTime = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "aws_ec2_reserved_instances_end_time",
-		Help: "End time of this reservation",
-	},
-		riLabels)
 
 	rilLabels = []string{
 		"az",
+		"scope",
 		"instance_type",
 		"product",
-		"reserved_instance_id",
 		"state",
 	}
 
@@ -171,12 +146,7 @@ func main() {
 		append(siLabels, tagl...))
 
 	prometheus.Register(instancesCount)
-	prometheus.Register(riUsagePrice)
-	prometheus.Register(riFixedPrice)
-	prometheus.Register(riHourlyPrice)
 	prometheus.Register(riInstanceCount)
-	prometheus.Register(riStartTime)
-	prometheus.Register(riEndTime)
 	prometheus.Register(rilInstanceCount)
 	prometheus.Register(siCount)
 	prometheus.Register(siBidPrice)
@@ -267,6 +237,28 @@ func instances(svc *ec2.EC2, awsRegion string) {
 }
 
 func reservations(svc *ec2.EC2, awsRegion string) {
+	instanceLabelsCacheMutex.RLock()
+	defer instanceLabelsCacheMutex.RUnlock()
+
+	labels := prometheus.Labels{}
+	riInstanceCount.Reset()
+	for iid, ils := range instanceLabelsCache {
+		labels["scope"] = ils["Availability Zone"]
+		labels["az"] = ils["az"]
+		labels["instance_type"] = ils["instance_type"]
+		labels["tenancy"] = "default"
+		labels["offer_type"] = "No Upfront"
+		labels["product"] = "Linux/UNIX"
+		if _, ok := instanceLabelsCacheIsVPC[iid]; ok {
+			labels["product"] += " (Amazon VPC)"
+		}
+		riInstanceCount.With(labels).Set(0)
+
+		labels["scope"] = ils["Region"]
+		labels["az"] = ils["none"]
+		riInstanceCount.With(labels).Set(0)
+	}
+
 	params := &ec2.DescribeReservedInstancesInput{
 		Filters: []*ec2.Filter{
 			{
@@ -281,33 +273,21 @@ func reservations(svc *ec2.EC2, awsRegion string) {
 	}
 
 	ris := map[string]*ec2.ReservedInstances{}
-	riUsagePrice.Reset()
-	riFixedPrice.Reset()
-	riHourlyPrice.Reset()
-	riInstanceCount.Reset()
-	riStartTime.Reset()
-	riEndTime.Reset()
-	labels := prometheus.Labels{}
+	labels = prometheus.Labels{}
 	for _, r := range resp.ReservedInstances {
-		labels["az"] = *r.AvailabilityZone
+		labels["scope"] = *r.Scope
+		if *r.Scope == "Region" {
+			labels["az"] = "none"
+		} else {
+			labels["az"] = *r.AvailabilityZone
+		}
 		labels["instance_type"] = *r.InstanceType
 		labels["tenancy"] = *r.InstanceTenancy
 		labels["offer_type"] = *r.OfferingType
 		labels["product"] = *r.ProductDescription
-		labels["reserved_instance_id"] = *r.ReservedInstancesId
 		ris[*r.ReservedInstancesId] = r
 
-		riUsagePrice.With(labels).Set(*r.UsagePrice)
-		riFixedPrice.With(labels).Set(*r.FixedPrice)
-		riHourlyPrice.With(labels).Set(0)
-		for _, c := range r.RecurringCharges {
-			if *c.Frequency == "Hourly" {
-				riHourlyPrice.With(labels).Set(*c.Amount)
-			}
-		}
-		riInstanceCount.With(labels).Set(float64(*r.InstanceCount))
-		riStartTime.With(labels).Set(float64(r.Start.Unix()))
-		riEndTime.With(labels).Set(float64(r.End.Unix()))
+		riInstanceCount.With(labels).Add(float64(*r.InstanceCount))
 	}
 
 	rilparams := &ec2.DescribeReservedInstancesListingsInput{
@@ -327,10 +307,14 @@ func reservations(svc *ec2.EC2, awsRegion string) {
 
 	labels = prometheus.Labels{}
 	for _, r := range ris {
-		labels["az"] = *r.AvailabilityZone
+		labels["scope"] = *r.Scope
+		if *r.Scope == "Region" {
+			labels["az"] = "none"
+		} else {
+			labels["az"] = *r.AvailabilityZone
+		}
 		labels["instance_type"] = *r.InstanceType
 		labels["product"] = *r.ProductDescription
-		labels["reserved_instance_id"] = *r.ReservedInstancesId
 
 		for _, s := range []string{"available", "sold", "cancelled", "pending"} {
 			labels["state"] = s
@@ -345,10 +329,14 @@ func reservations(svc *ec2.EC2, awsRegion string) {
 			fmt.Printf("Reservations listing for unknown reservation")
 			continue
 		}
-		labels["az"] = *r.AvailabilityZone
+		labels["scope"] = *r.Scope
+		if *r.Scope == "Region" {
+			labels["az"] = "none"
+		} else {
+			labels["az"] = *r.AvailabilityZone
+		}
 		labels["instance_type"] = *r.InstanceType
 		labels["product"] = *r.ProductDescription
-		labels["reserved_instance_id"] = *r.ReservedInstancesId
 
 		for _, ic := range ril.InstanceCounts {
 			labels["state"] = *ic.State
@@ -443,7 +431,7 @@ func spots(svc *ec2.EC2, awsRegion string) {
 
 	// This is silly, but spot instances requests don't seem to include the vpc case
 	pList := []*string{}
-	for p, _ := range productSeen {
+	for p := range productSeen {
 		pp := p
 		pList = append(pList, &pp)
 	}
