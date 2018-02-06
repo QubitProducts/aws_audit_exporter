@@ -40,10 +40,11 @@ message Request {
     UMAMI = 2;
     GOPHERLICIOUS = 3;
   }
-  string name = 1;  // "optional" may be omitted
+  string name = 1;
   repeated int64 key = 2;
-  optional Flavour taste = 3;
+  Flavour taste = 3;
   Book book = 4;
+  repeated int64 unpacked = 5 [packed=false];
 }
 
 message Book {
