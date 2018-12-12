@@ -1,7 +1,8 @@
-FROM golang:1.9
+FROM golang:1.11
 
-ADD . /go/src/github.com/QubitProducts/aws_audit_exporter
-RUN go install github.com/QubitProducts/aws_audit_exporter
+ADD . /src
+WORKDIR /src
+RUN go install .
 
 ENTRYPOINT ["/go/bin/aws_audit_exporter"]
 
