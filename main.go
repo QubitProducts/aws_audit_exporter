@@ -447,21 +447,25 @@ func spots(svc *ec2.EC2, awsRegion string) {
 			},
 		},
 	}
-	phResp, err := svc.DescribeSpotPriceHistory(phParams)
+	err = svc.DescribeSpotPriceHistoryPages(phParams,
+		func(page *ec2.DescribeSpotPriceHistoryOutput, lastPage bool) bool {
+			spLabels := prometheus.Labels{}
+			for _, sp := range page.SpotPriceHistory {
+				spLabels["az"] = *sp.AvailabilityZone
+				spLabels["product"] = *sp.ProductDescription
+				spLabels["instance_type"] = *sp.InstanceType
+				if sp.SpotPrice != nil {
+					if f, err := strconv.ParseFloat(*sp.SpotPrice, 64); err == nil {
+						sphPrice.With(spLabels).Set(f)
+					}
+				}
+			}
+			return !lastPage
+		})
+
 	if err != nil {
 		fmt.Println("there was an error listing spot requests", awsRegion, err.Error())
 		log.Fatal(err.Error())
-	}
-	spLabels := prometheus.Labels{}
-	for _, sp := range phResp.SpotPriceHistory {
-		spLabels["az"] = *sp.AvailabilityZone
-		spLabels["product"] = *sp.ProductDescription
-		spLabels["instance_type"] = *sp.InstanceType
-		if sp.SpotPrice != nil {
-			if f, err := strconv.ParseFloat(*sp.SpotPrice, 64); err == nil {
-				sphPrice.With(spLabels).Set(f)
-			}
-		}
 	}
 }
 
