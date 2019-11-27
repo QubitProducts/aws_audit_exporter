@@ -1,9 +1,11 @@
-FROM golang:1.11
+FROM golang:1.11  AS build-env
 
 ADD . /src
 WORKDIR /src
 RUN go install .
 
-ENTRYPOINT ["/go/bin/aws_audit_exporter"]
+FROM scratch
 
+COPY --from=build-env /go/bin/aws_audit_exporter /
+ENTRYPOINT ["/aws_audit_exporter"]
 EXPOSE 9190
