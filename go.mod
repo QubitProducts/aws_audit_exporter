@@ -8,7 +8,7 @@ require (
 	github.com/jmespath/go-jmespath v0.0.0-20160803190731-bd40a432e4c7 // indirect
 	github.com/jtolds/gls v4.2.1+incompatible // indirect
 	github.com/matttproud/golang_protobuf_extensions v1.0.1 // indirect
-	github.com/prometheus/client_golang v0.8.0
+	github.com/prometheus/client_golang v0.9.4
 	github.com/prometheus/client_model v0.0.0-20150212101744-fa8ad6fec335 // indirect
 	github.com/prometheus/common v0.0.0-20170220103846-49fee292b27b // indirect
 	github.com/prometheus/procfs v0.0.0-20150223001136-6c34ef819e19 // indirect
