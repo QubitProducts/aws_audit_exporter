@@ -2,7 +2,7 @@ FROM golang:1.11  AS build-env
 
 ADD . /src
 WORKDIR /src
-RUN go install .
+RUN CGO_ENABLED=0 go install .
 
 FROM scratch
 
